@@ -199,6 +199,30 @@
                                :explain (s/explain-data ::query query)})))
     conformed-query))
 
+(comment
+
+  (s/conform ::query '{:find [(/ x y) (sum z)]
+                       :keys [x-div-y sum-z]
+                       :in [[[x y z]]]})
+
+  (s/conform ::query '{:find [(/ x y) (sum z)]
+                       :where [[(= (pos? x))]]
+                       :keys [x-div-y sum-z]
+                       :in [[[x y z]]]})
+
+  (s/conform ::query '{:find [e]
+                       :in [[first-name]]
+                       :where [[e :first-name first-name]]})
+
+  (s/conform ::query
+             '{:find [e]
+               :in [[first-name ...]]
+               :where [[e :first-name first-name]]})
+
+  (def x [[:triple {:e [:logic-var 'e], :a :first-name, :v [:logic-var 'first-name]}]])
+
+  :FIXME)
+
 (declare plan-query)
 
 (defn- col-sym
@@ -220,12 +244,12 @@
   (->> (vals var->cols)
        (filter #(> (count %) 1))
        (mapcat
-         (fn [cols]
-           (->> (set (for [col cols
-                           col2 cols
-                           :when (not= col col2)]
-                       (set [col col2])))
-                (map #(list* '= %)))))
+        (fn [cols]
+          (->> (set (for [col cols
+                          col2 cols
+                          :when (not= col col2)]
+                      (set [col col2])))
+               (map #(list* '= %)))))
        (vec)))
 
 (defn- wrap-unify [plan var->cols]
@@ -572,7 +596,6 @@
            plan-u sq-plan-u]
           (wrap-unify (::var->cols (meta rels)))))
 
-
     (mega-join (into [plan] union-joins) param-vars)))
 
 (defn- plan-sub-query [{:keys [query]}]
@@ -647,7 +670,7 @@
 (defmethod replace-vars :literal [literal replace-ctx]
   [literal replace-ctx])
 
-(defmethod replace-vars :scalar [[_ var]replace-ctx]
+(defmethod replace-vars :scalar [[_ var] replace-ctx]
   (let [[replacement new-ctx] (get-replacement replace-ctx var)]
     [[:scalar replacement] new-ctx]))
 
@@ -804,7 +827,7 @@
             (:semi-join :anti-join)
             (->> clause second :terms
                  (expand-rules rule-name->rules)
-                 (update clause 1 assoc :terms ))
+                 (update clause 1 assoc :terms))
 
             :union-join
             (->> clause second :branches
@@ -1006,8 +1029,38 @@
       (wrap-head conformed-query)
       (wrap-top conformed-query)))
 
+(defn- extract-logic-var-or-scalars [coll]
+  (when (coll? coll)
+    (for [x coll]
+      (if (and (vector? x) (= 2 (count x))
+               (or (= :logic-var (first x))
+                   (= :scalar (first x))))
+        (second x)
+        (extract-logic-var-or-scalars x)))))
+
+(defn- extract-symbols [coll]
+  (when (coll? coll)
+    (for [x coll]
+      (if (symbol? x) x (extract-symbols x)))))
+
+(defn- check-unknown-vars
+  [conformed-query]
+  (let [scrub (fn [coll] (->> coll flatten (remove nil?) distinct set))
+        find-vars (scrub (extract-logic-var-or-scalars (:find conformed-query)))
+        where-bindings (scrub (extract-logic-var-or-scalars (:where conformed-query)))
+        in-bindings (scrub (extract-symbols (:in conformed-query)))
+        known-bindings (set/union where-bindings in-bindings)
+        unknown-vars (set/difference find-vars known-bindings)]
+    (when-not (empty? unknown-vars)
+      (throw (err/illegal-arg
+              :find-unknown-vars
+              {::err/message (str ":find unknown variables: " (pr-str unknown-vars))
+               :unknown-vars unknown-vars})))
+    conformed-query))
+
 (defn compile-query [query]
   (-> (conform-query query)
+      (check-unknown-vars)
       (plan-query)))
 
 (defn- args->params [args in-bindings]

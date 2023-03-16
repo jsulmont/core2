@@ -238,6 +238,15 @@
                                  [oid :quantity qty]]}
                        (assoc :basis {:tx tx})))))))
 
+(deftest test-find-unknown-vars
+  (let [_ (c2/submit-tx tu/*node* ivan+petr)]
+    (t/is (thrown-with-msg? IllegalArgumentException
+                            #":find unknown variables: #\{f\}"
+                            (c2/q tu/*node*
+                                  '{:find [name f]
+                                    :where [[e :first-name name]]}))
+          "find unknown variable")))
+
 (deftest test-aggregate-exprs
   (let [tx (c2/submit-tx tu/*node* [[:put {:id :foo, :category :c0, :v 1}]
                                     [:put {:id :bar, :category :c0, :v 2}]
@@ -274,23 +283,21 @@
   ;; TODO aggregates nested within other aggregates/forms
   ;; - doesn't appear in TPC-H but guess we'll want these eventually
 
-  #_
-  (t/is (= #{[28.5]}
-           (xt/q (xt/db *api*)
-                 '{:find [(/ (double (sum (* ?x ?x)))
-                             (count ?x))]
-                   :in [[?x ...]]}
-                 (range 10)))
-        "aggregates can be included in exprs")
+  #_(t/is (= #{[28.5]}
+             (xt/q (xt/db *api*)
+                   '{:find [(/ (double (sum (* ?x ?x)))
+                               (count ?x))]
+                     :in [[?x ...]]}
+                   (range 10)))
+          "aggregates can be included in exprs")
 
-  #_
-  (t/is (thrown-with-msg? IllegalArgumentException
-                          #"nested agg"
-                          (xt/q (xt/db *api*)
-                                '{:find [(sum (sum ?x))]
-                                  :in [[?x ...]]}
-                                (range 10)))
-        "aggregates can't be nested")
+  #_(t/is (thrown-with-msg? IllegalArgumentException
+                            #"nested agg"
+                            (xt/q (xt/db *api*)
+                                  '{:find [(sum (sum ?x))]
+                                    :in [[?x ...]]}
+                                  (range 10)))
+          "aggregates can't be nested")
 
   (t/testing "implicitly groups by variables present outside of aggregates"
     (t/is (= [{:x-div-y 1, :sum-z 2} {:x-div-y 2, :sum-z 3} {:x-div-y 2, :sum-z 5}]
@@ -303,16 +310,15 @@
                     [4 2 5]]))
           "even though (/ x y) yields the same result in the latter two rows, we group by them individually")
 
-    #_
-    (t/is (= #{[1 3] [1 7] [4 -1]}
-             (c2/q tu/*node*
-                   '{:find [x (- (sum z) y)]
-                     :in [[[x y z]]]}
-                   [[1 1 4]
-                    [1 3 2]
-                    [1 3 8]
-                    [4 6 5]]))
-          "groups by x and y in this case")))
+    #_(t/is (= #{[1 3] [1 7] [4 -1]}
+               (c2/q tu/*node*
+                     '{:find [x (- (sum z) y)]
+                       :in [[[x y z]]]}
+                     [[1 1 4]
+                      [1 3 2]
+                      [1 3 8]
+                      [4 6 5]]))
+            "groups by x and y in this case")))
 
 (deftest test-query-with-in-bindings
   (let [tx (c2/submit-tx tu/*node* ivan+petr)]
@@ -602,7 +608,6 @@
                                                 [(= "Ivan" n)])]}
                          (assoc :basis {:tx tx})))))
 
-
       (t/is (= [{:n "Petr", :e :petr} {:n "Sergei", :e :sergei}]
                (c2/q tu/*node*
                      (-> '{:find [e n]
@@ -621,7 +626,6 @@
                                                 [e :foo n]
                                                 [(= n 1)])]}
                          (assoc :basis {:tx tx})))))
-
 
       (t/is (thrown-with-msg?
              IllegalArgumentException
@@ -1007,7 +1011,6 @@
                              [u-other :age age2]
                              [(> age2 age-other)]]]}))))
 
-
     (t/testing "nested rules"
       (t/is (= [{:i :ivan}] (q '{:find [i]
                                  :where [[i :age age]
@@ -1016,7 +1019,6 @@
                                           (over-twenty-one-internal? x)]
                                          [(over-twenty-one-internal? y)
                                           [(>= y 21)]]]}))))
-
 
     (t/testing "nested rules bound (same arg names)"
       (t/is (= [{:i :ivan}] (q '{:find [i]
@@ -1059,7 +1061,6 @@
                              (exists? [age]
                                       [i :age age2]
                                       [(> age2 age)])]]}))))
-
 
     (t/testing "anti-join in rule"
       (t/is (= [{:i :ivan, :age 21}]
@@ -1137,7 +1138,6 @@
                              [i :name "Ivan"]
                              [i :last-name "Ivanov"]]]}))))
 
-
     (t/testing "subquery with rule"
       (t/is (= [{:i :ivan}]
                (q '{:find [i]
@@ -1174,7 +1174,6 @@
                                     [i :name "Ivan"]]
                                    [(is-ivan-or-petr? i)
                                     [i :name "Petr"]]]}))))
-
 
 (t/deftest test-temporal-opts
   (letfn [(q [query tx current-time]
