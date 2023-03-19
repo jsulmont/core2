@@ -24,14 +24,14 @@
               {:name "Petr"}]
              (c2/q tu/*node*
                    (-> '{:find [name]
-                         :where [[e :first-name name]]}
+                         :from [(xt_docs {:first-name name})]}
                        (assoc :basis {:tx tx})))))
 
     (t/is (= [{:e :ivan, :name "Ivan"}
               {:e :petr, :name "Petr"}]
              (c2/q tu/*node*
                    (-> '{:find [e name]
-                         :where [[e :first-name name]]}
+                         :from [(xt_docs {:id e, :first-name name})]}
                        (assoc :basis {:tx tx}))))
           "returning eid")))
 
@@ -469,34 +469,32 @@
 
     (t/is (= [{:e :ivan} {:e :petr}]
              (c2/q tu/*node*
-                   (-> '{:find [e]
-                         :where [[e :name name]
-                                 (exists? [e]
-                                          [c :parent e])]}
-                       (assoc :basis {:tx tx}))))
+                   '{:find [e]
+                     :where [[e :name name]
+                             (exists? {:find [e]
+                                       :where [[c :parent e]]})]}))
 
           "find people who have children")
 
     (t/is (= [{:e :sergei} {:e :jeff}]
              (c2/q tu/*node*
-                   (-> '{:find [e]
-                         :where [[e :name name]
-                                 [e :parent p]
-                                 (exists? [e p]
-                                          [s :parent p]
-                                          [(<> e s)])]}
-                       (assoc :basis {:tx tx}))))
+                   '{:find [e]
+                     :where [[e :name name]
+                             [e :parent p]
+                             (exists? {:find [p]
+                                       :in [e]
+                                       :where [[s :parent p]
+                                               [(<> e s)]]})]}))
           "find people who have siblings")
 
     (t/is (thrown-with-msg? IllegalArgumentException
-                            #":unsatisfied-vars"
+                            #":no-available-clauses"
                             (c2/q tu/*node*
-                                  (-> '{:find [e n]
-                                        :where [[e :foo n]
-                                                (exists? [e]
-                                                         [e :first-name "Petr"]
-                                                         [(= n 1)])]}
-                                      (assoc :basis {:tx tx})))))))
+                                  '{:find [e n]
+                                    :where [[e :foo n]
+                                            (exists? {:find [e]
+                                                      :where [[e :first-name "Petr"]
+                                                              [(= n 1)]]})]})))))
 
 (deftest test-anti-join
   (let [tx (c2/submit-tx
@@ -507,157 +505,147 @@
 
     (t/is (= [{:e :ivan} {:e :sergei}]
              (c2/q tu/*node*
-                   (-> '{:find [e]
-                         :where [[e :foo 1]
-                                 (not-exists? [e]
-                                              [e :first-name "Petr"])]}
-                       (assoc :basis {:tx tx})))))
+                   '{:find [e]
+                     :where [[e :foo 1]
+                             (not-exists? {:find [e]
+                                           :where [[e :first-name "Petr"]]})]})))
 
     (t/is (= [{:e :ivan} {:e :sergei}]
              (c2/q tu/*node*
-                   (-> '{:find [e]
-                         :where [[e :foo n]
-                                 (not-exists? [e n]
-                                              [e :first-name "Petr"]
-                                              [e :foo n])]}
-                       (assoc :basis {:tx tx})))))
+                   '{:find [e]
+                     :where [[e :foo n]
+                             (not-exists? {:find [e n]
+                                           :where [[e :first-name "Petr"]
+                                                   [e :foo n]]})]})))
 
     (t/is (= []
-             (c2/q
-              tu/*node*
-              (-> '{:find [e]
-                    :where [[e :foo n]
-                            (not-exists? [e n]
-                                         [e :foo n])]}
-                  (assoc :basis {:tx tx})))))
+             (c2/q tu/*node*
+                   '{:find [e]
+                     :where [[e :foo n]
+                             (not-exists? {:find [e n]
+                                           :where [[e :foo n]]})]})))
 
     (t/is (= [{:e :petr} {:e :sergei}]
              (c2/q tu/*node*
-                   (-> '{:find [e]
-                         :where [[e :foo 1]
-                                 (not-exists? [e]
-                                              [e :last-name "Ivanov"])]}
-                       (assoc :basis {:tx tx})))))
+                   '{:find [e]
+                     :where [[e :foo 1]
+                             (not-exists? {:find [e]
+                                           :where [[e :last-name "Ivanov"]]})]})))
 
     (t/is (= [{:e :ivan} {:e :petr} {:e :sergei}]
              (c2/q tu/*node*
-                   (-> '{:find [e]
-                         :where [[e :foo 1]
-                                 (not-exists? [e]
-                                              [e :first-name "Jeff"])]}
-                       (assoc :basis {:tx tx})))))
+                   '{:find [e]
+                     :where [[e :foo 1]
+                             (not-exists? {:find [e]
+                                           :where [[e :first-name "Jeff"]]})]})))
 
     (t/is (= [{:e :ivan} {:e :petr}]
              (c2/q tu/*node*
-                   (-> '{:find [e]
-                         :where [[e :foo 1]
-                                 (not-exists? [e]
-                                              [e :first-name n]
-                                              [e :last-name n])]}
-                       (assoc :basis {:tx tx})))))
+                   '{:find [e]
+                     :where [[e :foo 1]
+                             (not-exists? {:find [e]
+                                           :where [[e :first-name n]
+                                                   [e :last-name n]]})]})))
 
     (t/is (= [{:e :ivan, :first-name "Petr", :last-name "Petrov", :a "Ivan", :b "Ivanov"}
               {:e :petr, :first-name "Ivan", :last-name "Ivanov", :a "Petr", :b "Petrov"}
               {:e :sergei, :first-name "Ivan", :last-name "Ivanov", :a "Sergei", :b "Sergei"}
               {:e :sergei, :first-name "Petr", :last-name "Petrov", :a "Sergei", :b "Sergei"}]
              (c2/q tu/*node*
-                   (-> '{:find [e first-name last-name a b]
-                         :in [[[first-name last-name]]]
-                         :where [[e :foo 1]
-                                 [e :first-name a]
-                                 [e :last-name b]
-                                 (not-exists? [e first-name last-name]
-                                              [e :first-name first-name]
-                                              [e :last-name last-name])]}
-                       (assoc :basis {:tx tx}))
+                   '{:find [e first-name last-name a b]
+                     :in [[[first-name last-name]]]
+                     :where [[e :foo 1]
+                             [e :first-name a]
+                             [e :last-name b]
+                             (not-exists? {:find [e first-name last-name]
+                                           :where [[e :first-name first-name]
+                                                   [e :last-name last-name]]})]}
                    [["Ivan" "Ivanov"]
                     ["Petr" "Petrov"]])))
 
     (t/testing "apply anti-joins"
       (t/is (= [{:n 1, :e :ivan} {:n 1, :e :petr} {:n 1, :e :sergei}]
                (c2/q tu/*node*
-                     (-> '{:find [e n]
-                           :where [[e :foo n]
-                                   (not-exists? [e n]
-                                                [e :first-name "Petr"]
-                                                [(= n 2)])]}
-                         (assoc :basis {:tx tx})))))
+                     '{:find [e n]
+                       :where [[e :foo n]
+                               (not-exists? {:find [e]
+                                             :in [n]
+                                             :where [[e :first-name "Petr"]
+                                                     [(= n 2)]]})]})))
 
       (t/is (= [{:n 1, :e :ivan} {:n 1, :e :sergei}]
                (c2/q tu/*node*
-                     (-> '{:find [e n]
-                           :where [[e :foo n]
-                                   (not-exists? [e n]
-                                                [e :first-name "Petr"]
-                                                [(= n 1)])]}
-                         (assoc :basis {:tx tx})))))
+                     '{:find [e n]
+                       :where [[e :foo n]
+                               (not-exists? {:find [e]
+                                             :in [n]
+                                             :where [[e :first-name "Petr"]
+                                                     [(= n 1)]]})]})))
 
       (t/is (= []
                (c2/q tu/*node*
-                     (-> '{:find [e n]
-                           :where [[e :foo n]
-                                   (not-exists? [n]
-                                                [(= n 1)])]}
-                         (assoc :basis {:tx tx})))))
+                     '{:find [e n]
+                       :where [[e :foo n]
+                               (not-exists? {:find []
+                                             :in [n]
+                                             :where [[(= n 1)]]})]})))
 
       (t/is (= [{:n "Petr", :e :petr} {:n "Sergei", :e :sergei}]
                (c2/q tu/*node*
-                     (-> '{:find [e n]
-                           :where [[e :first-name n]
-                                   (not-exists? [n]
-                                                [(= "Ivan" n)])]}
-                         (assoc :basis {:tx tx})))))
+                     '{:find [e n]
+                       :where [[e :first-name n]
+                               (not-exists? {:find []
+                                             :in [n]
+                                             :where [[(= "Ivan" n)]]})]})))
 
       (t/is (= [{:n "Petr", :e :petr} {:n "Sergei", :e :sergei}]
                (c2/q tu/*node*
-                     (-> '{:find [e n]
-                           :where [[e :first-name n]
-                                   (not-exists? [n]
-                                                [e :first-name n]
-                                                [e :first-name "Ivan"])]}
-                         (assoc :basis {:tx tx})))))
+                     '{:find [e n]
+                       :where [[e :first-name n]
+                               (not-exists? {:find [n]
+                                             :where [[e :first-name n]
+                                                     [e :first-name "Ivan"]]})]})))
 
       (t/is (= [{:n 1, :e :ivan} {:n 1, :e :sergei}]
                (c2/q tu/*node*
-                     (-> '{:find [e n]
-                           :where [[e :foo n]
-                                   (not-exists? [e n]
-                                                [e :first-name "Petr"]
-                                                [e :foo n]
-                                                [(= n 1)])]}
-                         (assoc :basis {:tx tx})))))
+                     '{:find [e n]
+                       :where [[e :foo n]
+                               (not-exists? {:find [e n]
+                                             :where [[e :first-name "Petr"]
+                                                     [e :foo n]
+                                                     [(= n 1)]]})]})))
 
       (t/is (thrown-with-msg?
              IllegalArgumentException
-             #":unsatisfied-vars"
+             #":no-available-clauses"
              (c2/q tu/*node*
                    (-> '{:find [e n]
                          :where [[e :foo n]
-                                 (not-exists? [e]
-                                              [e :first-name "Petr"]
-                                              [(= n 1)])]}
+                                 (not-exists? {:find [e]
+                                               :where [[e :first-name "Petr"]
+                                                       [(= n 1)]]})]}
                        (assoc :basis {:tx tx})))))
 
       ;; TODO what to do if arg var isn't used, either remove it from the join
       ;; or convert the anti-join to an apply and param all the args
       #_(t/is (= [{:e :ivan} {:e :sergei}]
                  (c2/q tu/*node*
-                       (-> '{:find [e n]
-                             :where [[e :foo n]
-                                     (not-exists? [e n]
-                                                  [e :first-name "Petr"])]}
-                           (assoc :basis {:tx tx}))))))
+                       '{:find [e n]
+                         :where [[e :foo n]
+                                 (not-exists? {:find [e]
+                                               :in [n]
+                                               :where [[e :first-name "Petr"]]})]}))))
 
     (t/testing "Multiple anti-joins"
       (t/is (= [{:n "Petr", :e :petr}]
                (c2/q tu/*node*
-                     (-> '{:find [e n]
-                           :where [[e :first-name n]
-                                   (not-exists? [n]
-                                                [(= n "Ivan")])
-                                   (not-exists? [e]
-                                                [e :first-name "Sergei"])]}
-                         (assoc :basis {:tx tx}))))))))
+                     '{:find [e n]
+                       :where [[e :first-name n]
+                               (not-exists? {:find []
+                                             :in [n]
+                                             :where [[(= n "Ivan")]]})
+                               (not-exists? {:find [e]
+                                             :where [[e :first-name "Sergei"]]})]}))))))
 
 (deftest calling-a-function-580
   (let [tx (c2/submit-tx tu/*node*
@@ -854,8 +842,7 @@
             (count-table [tx]
               (-> (c2/q node (-> '{:find [(count id)]
                                    :keys [id-count]
-                                   :where [[id :id]
-                                           [id :_table :t1]]}
+                                   :from [(t1 [id])]}
                                  (assoc :basis {:tx tx})))
                   (first)
                   (:id-count)))]
@@ -874,24 +861,18 @@
                                                :data (str "data" id)
                                                :_table :t1}])
                                       (partition-all 20))]
-                      (c2/submit-tx node tx-ops))))
-
-            (count-table [tx]
-              (-> (c2/q node (-> '{:find [(count id)]
-                                   :keys [id-count]
-                                   :where [[id :id]
-                                           [id :_table :t1]]}
-                                 (assoc :basis {:tx tx})))
-                  (first)
-                  (:id-count)))]
+                      (c2/submit-tx node tx-ops))))]
 
       (let [_tx1 (c2/submit-tx node [[:put {:id 0 :foo :bar}]])
             tx2 (submit-ops! (range 1010))]
-        (t/is (= 1010 (count-table tx2)))
-        (t/is (= [] (c2/q node (-> '{:find [id]
-                                     :where [[id :id]
-                                             [id :some-attr my-attr]]}
-                                   (assoc :basis {:tx tx2})))))))))
+        (t/is (= 1010 (-> (c2/q node '{:find [(count id)]
+                                       :keys [id-count]
+                                       :from [(t1 {:id id})]})
+                          (first)
+                          (:id-count))))
+
+        (t/is (= [] (c2/q node '{:find [id]
+                                 :from [(xt_docs [id some-attr])]})))))))
 
 (t/deftest add-better-metadata-support-for-keywords
   (with-open [node (node/start-node {:core2/live-chunk {:rows-per-block 10, :rows-per-chunk 1000}})]
@@ -921,10 +902,8 @@
         (t/is (= [{:aid :a2 :a 2 :b 3}]
                  (c2/q tu/*node*
                        (-> '{:find [aid a b]
-                             :where [[aid :a a]
-                                     [aid :b b]
-                                     [aid :_table "a"]
-                                     (q {:find [b]
+                             :from [(a [{:id aid} a b])]
+                             :where [(q {:find [b]
                                          :in [a]
                                          :where [[(+ a 1) b]]})]}
                            (assoc :basis {:tx tx}))))
@@ -934,19 +913,17 @@
         (t/is (= [{:aid :a2 :a 2 :b 3}]
                  (c2/q tu/*node*
                        (-> '{:find [aid a b]
-                             :where [[aid :a a]
-                                     [aid :b b]
-                                     [aid :_table "a"]
-                                     (union-join [a b]
+                             :from [(a [{:id aid} a b])]
+                             :where [(union-join [a b]
                                                  [(+ a 1) b])]}
                            (assoc :basis {:tx tx}))))
               "b is unified")))))
 
 (deftest test-basic-rules
-  (let [_tx (c2/submit-tx tu/*node* [[:put {:id :ivan :name "Ivan" :last-name "Ivanov" :age 21}]
-                                     [:put {:id :petr :name "Petr" :last-name "Petrov" :age 18}]
-                                     [:put {:id :georgy :name "Georgy" :last-name "George" :age 17}]])
-        q (fn q [query & args]
+  (c2/submit-tx tu/*node* [[:put {:id :ivan :name "Ivan" :last-name "Ivanov" :age 21}]
+                           [:put {:id :petr :name "Petr" :last-name "Petrov" :age 18}]
+                           [:put {:id :georgy :name "Georgy" :last-name "George" :age 17}]])
+  (letfn [(q [query & args]
             (apply c2/q tu/*node* query args))]
 
     (t/testing "without rule"
@@ -1058,9 +1035,10 @@
                     :where [[i :age age]
                             (older? age)]
                     :rules [[(older? age)
-                             (exists? [age]
-                                      [i :age age2]
-                                      [(> age2 age)])]]}))))
+                             (exists? {:find []
+                                       :in [age]
+                                       :where [[i :age age2]
+                                               [(> age2 age)]]})]]}))))
 
     (t/testing "anti-join in rule"
       (t/is (= [{:i :ivan, :age 21}]
@@ -1068,9 +1046,10 @@
                      :where [[i :age age]
                              (not-older? age)]
                      :rules [[(not-older? age)
-                              (not-exists? [age]
-                                           [i :age age2]
-                                           [(> age2 age)])]]}))))
+                              (not-exists? {:find []
+                                            :in [age]
+                                            :where [[i :age age2]
+                                                    [(> age2 age)]]})]]}))))
 
     (t/testing "subquery in rule"
       (t/is (= [{:i :petr, :other-age 21}
@@ -1111,8 +1090,8 @@
 
       (t/is (= [{:name "Petr"}] (q '{:find [name]
                                      :where [[i :name name]
-                                             (not-exists? [i]
-                                                          (is-ivan-or-georgy? i))]
+                                             (not-exists? {:find [i]
+                                                           :where [(is-ivan-or-georgy? i)]})]
                                      :rules [[(is-ivan-or-georgy? i)
                                               [i :name "Ivan"]]
                                              [(is-ivan-or-georgy? i)
@@ -1220,40 +1199,42 @@
                 {:id :mark, :app-start (util/->zdt #inst "2023"), :app-end (util/->zdt #inst "2024")}
                 {:id :john, :app-start (util/->zdt #inst "2016"), :app-end (util/->zdt #inst "2020")}]
                (q '{:find [id app-start app-end]
-                    :where [(for-all-app-time id)
-                            [id :application_time_start app-start]
-                            [id :application_time_end app-end]]}
+                    :from [(xt_docs [id {:application_time_start app-start
+                                         :application_time_end app-end}]
+                                    {:for-app-time :all-time})]}
                   tx1, nil))
             "entity history, all time")
 
       (t/is (= [{:id :matthew, :app-start (util/->zdt #inst "2015"), :app-end (util/->zdt util/end-of-time)}
                 {:id :luke, :app-start (util/->zdt #inst "2021"), :app-end (util/->zdt #inst "2022")}]
                (q '{:find [id app-start app-end]
-                    :where [(for-app-time-in id, #inst "2021", #inst "2023")
-                            [id :application_time_start app-start]
-                            [id :application_time_end app-end]]}
+                    :from [(xt_docs [id {:application_time_start app-start
+                                         :application_time_end app-end}]
+                                    {:for-app-time [:in #inst "2021", #inst "2023"]})]}
                   tx1, nil))
             "entity history, range")
 
       (t/is (= [{:id :matthew}, {:id :mark}]
                (q '{:find [id],
-                    :where [(for-app-time-at id #inst "2018")
-                            (for-app-time-at id2 #inst "2023")
-                            [(= id id2)]]},
+                    :from [(xt_docs [id]
+                                    {:for-app-time [:at #inst "2018"]})
+                           (xt_docs [id]
+                                    {:for-app-time [:at #inst "2023"]})]},
                   tx1, nil))
             "cross-time join - who was here in both 2018 and 2023?")
 
       (t/is (= [{:id :matthew} {:id :mark}]
                (q '{:find [id],
-                    :where [(for-all-app-time id)
-                            [id :application_time_start app-start]
-                            [id :application_time_end app-end]
+                    :from [(xt_docs [id {:application_time_start app-start
+                                         :application_time_end app-end}]
+                                    {:for-app-time :all-time})
 
-                            (for-all-app-time :john)
-                            [:john :application_time_start john-start]
-                            [:john :application_time_end john-end]
+                           (xt_docs [{:id :john
+                                      :application_time_start john-start
+                                      :application_time_end john-end}]
+                                    {:for-app-time :all-time})]
 
-                            [(<> id :john)]
+                    :where [[(<> id :john)]
 
                             ;; eventually: 'overlaps?'
                             [(< app-start john-end)]
@@ -1270,12 +1251,13 @@
                  :tt-start (util/->zdt #inst "2020-01-02")
                  :tt-end (util/->zdt util/end-of-time)}]
                (q '{:find [vt-start vt-end tt-start tt-end]
-                    :where [(for-all-app-time :luke)
-                            (for-all-sys-time :luke)
-                            [:luke :application_time_start vt-start]
-                            [:luke :application_time_end vt-end]
-                            [:luke :system_time_start tt-start]
-                            [:luke :system_time_end tt-end]]}
+                    :from [(xt_docs {:id :luke
+                                     :application_time_start vt-start
+                                     :application_time_end vt-end
+                                     :system_time_start tt-start
+                                     :system_time_end tt-end}
+                                    {:for-app-time :all-time
+                                     :for-sys-time :all-time})]}
                   tx1 nil))
 
             "for all sys time"))))
@@ -1320,10 +1302,11 @@
                             [[:put {:id :delete-1-week-records,
                                     :fn #c2/clj-form (fn delete-1-weeks-records []
                                                        (->> (q '{:find [id app-start app-end]
-                                                                 :where [(for-all-app-time id)
-                                                                         [id :application_time_start app-start]
-                                                                         [id :application_time_end app-end]
-                                                                         [(= (- #inst "1970-01-08" #inst "1970-01-01")
+                                                                 :from [(xt_docs [id
+                                                                                  {:application_time_start app-start
+                                                                                   :application_time_end app-end}]
+                                                                                 {:for-app-time :all-time})]
+                                                                 :where [[(= (- #inst "1970-01-08" #inst "1970-01-01")
                                                                              (- app-end app-start))]]})
                                                             (map (fn [{:keys [id app-start app-end]}]
                                                                    [:delete id {:app-time-start app-start
@@ -1337,56 +1320,59 @@
 
       (t/is (= [{:cust 145 :app-start (util/->zdt #inst "1998-01-10")}]
                (q '{:find [cust app-start]
-                    :where [(for-all-app-time id)
-                            [id :application_time_start app-start]
-                            [id :customer-number cust]]}, tx0, nil))
+                    :from [(xt_docs {:customer-number cust, :application_time_start app-start}
+                                    {:for-app-time :all-time})]}
+                  tx0, nil))
             "as-of 14 Jan")
 
       (t/is (= [{:cust 145, :app-start (util/->zdt #inst "1998-01-10")}
                 {:cust 827, :app-start (util/->zdt #inst "1998-01-15")}]
                (q '{:find [cust app-start]
-                    :where [(for-all-app-time id)
-                            [id :application_time_start app-start]
-                            [id :customer-number cust]]}, tx1, nil))
+                    :from [(xt_docs {:customer-number cust, :application_time_start app-start}
+                                    {:for-app-time :all-time})]}
+                  tx1, nil))
             "as-of 18 Jan")
 
       (t/is (= [{:cust 145, :app-start (util/->zdt #inst "1998-01-05")}
                 {:cust 827, :app-start (util/->zdt #inst "1998-01-12")}]
                (q '{:find [cust app-start]
-                    :order-by [[app-start :asc]]
-                    :where [(for-all-app-time id)
-                            [id :application_time_start app-start]
-                            [id :customer-number cust]]}, tx5, nil))
+                    :from [(xt_docs {:customer-number cust, :application_time_start app-start}
+                                    {:for-app-time :all-time})]
+                    :order-by [[app-start :asc]]}
+                  tx5, nil))
             "as-of 29 Jan")
 
       (t/is (= [{:cust 827, :app-start (util/->zdt #inst "1998-01-12"), :app-end (util/->zdt #inst "1998-01-20")}]
                (q '{:find [cust app-start app-end]
-                    :order-by [[app-start :asc]]
-                    :where [(for-all-app-time id)
-                            [id :application_time_start app-start]
-                            [id :application_time_end app-end]
-                            [id :customer-number cust]]}, tx6, nil))
+                    :from [(xt_docs {:customer-number cust,
+                                     :application_time_start app-start
+                                     :application_time_end app-end}
+                                    {:for-app-time :all-time})]
+                    :order-by [[app-start :asc]]}
+                  tx6, nil))
             "'as best known' (as-of 30 Jan)")
 
       (t/is (= [{:prop 3621, :vt-begin (util/->zdt #inst "1998-01-15"), :vt-end (util/->zdt #inst "1998-01-20")}]
                (q '{:find [prop (greatest app-start app-start2) (least app-end app-end2)]
                     :keys [prop vt-begin vt-end]
                     :in [in-prop]
-                    :order-by [[app-start :asc]]
-                    :where [(for-all-app-time id)
-                            [id :property-number in-prop]
-                            [id :customer-number cust]
-                            [id :application_time_start app-start]
-                            [id :application_time_end app-end]
-                            (for-all-app-time id2)
-                            [id2 :customer-number cust]
-                            [id2 :property-number prop]
-                            [(<> prop in-prop)]
-                            [id2 :application_time_start app-start2]
-                            [id2 :application_time_end app-end2]
+                    :from [(xt_docs {:property-number in-prop
+                                     :customer-number cust
+                                     :application_time_start app-start
+                                     :application_time_end app-end}
+                                    {:for-app-time :all-time})
+
+                           (xt_docs {:property-number prop
+                                     :customer-number cust
+                                     :application_time_start app-start2
+                                     :application_time_end app-end2}
+                                    {:for-app-time :all-time})]
+                    :where [[(<> prop in-prop)]
                             ;; eventually: 'overlaps?'
                             [(< app-start app-end2)]
-                            [(> app-end app-start2)]]}, tx7, nil, 7797))
+                            [(> app-end app-start2)]]
+                    :order-by [[app-start :asc]]}
+                  tx7, nil, 7797))
             "Case 2: Valid-time sequenced and transaction-time current")
 
       (t/is (= [{:prop 3621,
@@ -1397,30 +1383,33 @@
                (q '{:find [prop (greatest app-start app-start2) (least app-end app-end2) (greatest sys-start sys-start2) (least sys-end sys-end2)]
                     :keys [prop vt-begin vt-end recorded-start recorded-stop]
                     :in [in-prop]
-                    :order-by [[app-start :asc]]
-                    :where [(for-all-app-time id)
-                            (for-all-sys-time id)
-                            [id :property-number in-prop]
-                            [id :customer-number cust]
-                            [id :application_time_start app-start]
-                            [id :application_time_end app-end]
-                            [id :system_time_start sys-start]
-                            [id :system_time_end sys-end]
-                            (for-all-app-time id2)
-                            (for-all-sys-time id2)
-                            [id2 :customer-number cust]
-                            [id2 :property-number prop]
-                            [(<> prop in-prop)]
-                            [id2 :application_time_start app-start2]
-                            [id2 :application_time_end app-end2]
-                            [id2 :system_time_start sys-start2]
-                            [id2 :system_time_end sys-end2]
+                    :from [(xt_docs {:property-number in-prop
+                                     :customer-number cust
+                                     :application_time_start app-start
+                                     :application_time_end app-end
+                                     :system_time_start sys-start
+                                     :system_time_end sys-end}
+                                    {:for-app-time :all-time
+                                     :for-sys-time :all-time})
+
+                           (xt_docs {:customer-number cust
+                                     :property-number prop
+                                     :application_time_start app-start2
+                                     :application_time_end app-end2
+                                     :system_time_start sys-start2
+                                     :system_time_end sys-end2}
+
+                                    {:for-app-time :all-time
+                                     :for-sys-time :all-time})]
+                    :where [[(<> prop in-prop)]
                             ;; eventually: 'overlaps?'
                             [(< app-start app-end2)]
                             [(> app-end app-start2)]
                             ;; eventually: 'overlaps?'
                             [(< sys-start sys-end2)]
-                            [(> sys-end sys-start2)]]}, tx7, nil, 7797))
+                            [(> sys-end sys-start2)]]
+                    :order-by [[app-start :asc]]}
+                  tx7, nil, 7797))
             "Case 5: Application-time sequenced and system-time sequenced")
 
       (t/is (= [{:prop 3621,
@@ -1430,28 +1419,28 @@
                (q '{:find [prop (greatest app-start app-start2) (least app-end app-end2) sys-start2]
                     :keys [prop vt-begin vt-end recorded-start]
                     :in [in-prop]
-                    :order-by [[app-start :asc]]
-                    :where [(for-all-app-time id)
-                            (for-all-sys-time id)
-                            [id :property-number in-prop]
-                            [id :customer-number cust]
-                            [id :application_time_start app-start]
-                            [id :application_time_end app-end]
-                            [id :system_time_start sys-start]
-                            [id :system_time_end sys-end]
-                            (for-all-app-time id2)
-                            (for-all-sys-time id2)
-                            [id2 :customer-number cust]
-                            [id2 :property-number prop]
-                            [(<> prop in-prop)]
-                            [id2 :application_time_start app-start2]
-                            [id2 :application_time_end app-end2]
-                            [id2 :system_time_start sys-start2]
-                            [id2 :system_time_end sys-end2]
+                    :from [(xt_docs {:property-number in-prop
+                                     :customer-number cust
+                                     :application_time_start app-start
+                                     :application_time_end app-end
+                                     :system_time_start sys-start
+                                     :system_time_end sys-end}
+                                    {:for-app-time :all-time
+                                     :for-sys-time :all-time})
+
+                           (xt_docs {:customer-number cust
+                                     :property-number prop
+                                     :application_time_start app-start2
+                                     :application_time_end app-end2
+                                     :system_time_start sys-start2
+                                     :system_time_end sys-end2})]
+                    :where [[(<> prop in-prop)]
                             ;; eventually: 'overlaps?'
                             [(< app-start app-end2)]
                             [(> app-end app-start2)]
                             ;; eventually: 'contains?' with point
                             [(> sys-start2 sys-start)]
-                            [(< sys-start2 sys-end)]]}, tx7, nil, 7797))
+                            [(< sys-start2 sys-end)]]
+                    :order-by [[app-start :asc]]}
+                  tx7, nil, 7797))
             "Case 8: Application-time sequenced and system-time nonsequenced"))))

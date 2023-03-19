@@ -15,11 +15,11 @@
 
 (s/def ::logic-var simple-symbol?)
 
-;; TODO flesh out
-(def ^:private eid? (some-fn string? number? inst? keyword? (partial instance? LocalDate)))
-
-(s/def ::eid eid?)
-(s/def ::value (some-fn eid?))
+(s/def ::eid ::lp/value)
+(s/def ::attr keyword?)
+(s/def ::value ::lp/value)
+(s/def ::table simple-symbol?)
+(s/def ::column simple-symbol?)
 
 (s/def ::fn-call
   (s/and list?
@@ -37,15 +37,13 @@
 
 (s/def ::semi-join
   (s/cat :exists '#{exists?}
-         :args ::args-list
-         :terms (s/+ ::term)))
+         :sub-query ::query))
 
 (s/def ::anti-join
   (s/cat :not-exists '#{not-exists?}
-         :args ::args-list
-         :terms (s/+ ::term)))
+         :sub-query ::query))
 
-(s/def ::find (s/coll-of ::find-arg :kind vector? :min-count 1))
+(s/def ::find (s/coll-of ::find-arg :kind vector?))
 (s/def ::keys (s/coll-of symbol? :kind vector?))
 
 (s/def ::args-list (s/coll-of ::logic-var, :kind vector?, :min-count 0))
@@ -69,16 +67,44 @@
 
 (s/def ::in (s/* ::in-binding))
 
-(s/def ::e (s/or :literal ::eid, :logic-var ::logic-var))
+(s/def ::triple-value
+  (s/or :literal ::value,
+        :logic-var ::logic-var
+        :unwind (s/tuple ::logic-var #{'...})))
+
+(s/def ::match
+  (-> (s/or :map (-> (s/map-of ::attr ::triple-value)
+                     (s/and (s/conformer vec #(into {} %))))
+            :vector (-> (s/or :column ::column
+                              :map (s/map-of ::attr ::triple-value))
+                        (s/and (s/conformer (fn [[tag arg]]
+                                              (case tag :map arg, :column {(keyword arg) [:logic-var arg]}))
+                                            (fn [arg]
+                                              [:map arg])))
+                        (s/coll-of :kind vector?)))
+
+      (s/and (s/conformer (fn [[tag arg]]
+                            (case tag
+                              :map (vec arg)
+                              :vector (into [] cat arg)))
+                          (fn [v]
+                            [:vector (mapv #(conj {} %) v)])))))
+
+(s/def ::temporal-opts
+  (-> (s/keys :opt-un [::lp/for-app-time ::lp/for-sys-time])
+      (s/nonconforming)))
+
+(s/def ::from
+  (s/coll-of (s/and list? (s/cat :table ::table, :match ::match,
+                                 :temporal-opts (s/? ::temporal-opts)))
+             :kind vector?))
 
 (s/def ::triple
   (s/and vector?
          (s/conformer identity vec)
-         (s/cat :e ::e
-                :a keyword?
-                :v (s/? (s/or :literal ::value,
-                              :logic-var ::logic-var
-                              :unwind (s/tuple ::logic-var #{'...}))))))
+         (s/cat :e (s/or :literal ::eid, :logic-var ::logic-var)
+                :a ::attr
+                :v (s/? ::triple-value))))
 
 (s/def ::call-clause
   (s/and vector?
@@ -107,31 +133,7 @@
          :branches ::or-branches))
 
 (s/def ::sub-query
-  (s/cat :q #{'q}, :query ::query))
-
-(s/def ::temporal-literal ::util/datetime-value)
-
-(s/def ::for-all-app-time (s/cat :k #{'for-all-app-time}, :e ::e))
-
-(s/def ::for-app-time-at
-  (s/cat :k #{'for-app-time-at}, :e ::e,
-         :time-at ::temporal-literal))
-
-(s/def ::for-app-time-in
-  (s/cat :k #{'for-app-time-in}, :e ::e
-         :time-from (s/nilable ::temporal-literal)
-         :time-to (s/nilable ::temporal-literal)))
-
-(s/def ::for-all-sys-time (s/cat :k #{'for-all-sys-time}, :e ::e))
-
-(s/def ::for-sys-time-at
-  (s/cat :k #{'for-sys-time-at}, :e ::e,
-         :time-at ::temporal-literal))
-
-(s/def ::for-sys-time-in
-  (s/cat :k #{'for-sys-time-in}, :e ::e
-         :time-from (s/nilable ::temporal-literal)
-         :time-to (s/nilable ::temporal-literal)))
+  (s/cat :q #{'q}, :sub-query ::query))
 
 (s/def ::rule
   (s/and list?
@@ -152,19 +154,11 @@
 (s/def ::rules (s/coll-of ::rule-definition :kind vector?))
 
 (s/def ::term
-  (s/or :triple ::triple
-        :semi-join ::semi-join
+  (s/or :semi-join ::semi-join
         :anti-join ::anti-join
         :union-join ::union-join
 
-        :for-all-app-time ::for-all-app-time
-        :for-app-time-in ::for-app-time-in
-        :for-app-time-at ::for-app-time-at
-
-        :for-all-sys-time ::for-all-sys-time
-        :for-sys-time-in ::for-sys-time-in
-        :for-sys-time-at ::for-sys-time-at
-
+        :triple ::triple
         :call ::call-clause
         :sub-query ::sub-query
         :rule ::rule))
@@ -184,7 +178,7 @@
 
 (s/def ::query
   (s/keys :req-un [::find]
-          :opt-un [::keys ::in ::where ::order-by ::offset ::limit ::rules]))
+          :opt-un [::keys ::in ::from ::where ::order-by ::offset ::limit ::rules]))
 
 (s/def ::relation-arg
   (s/or :maps (s/coll-of (s/map-of simple-keyword? any?))
@@ -313,63 +307,48 @@
         (update :required-vars set/difference provided-vars))))
 
 (defn- term-vars [[term-type term-arg]]
-  (letfn [(sj-term-vars [spec]
-            (let [{:keys [args terms]} term-arg
-                  arg-vars (set args)
-                  {:keys [required-vars]} (combine-term-vars (map term-vars terms))]
+  (case term-type
+    :call (let [{:keys [form return]} term-arg]
+            {:required-vars (form-vars form)
+             :provided-vars (when-let [[return-type return-arg] return]
+                              (case return-type
+                                :scalar #{return-arg}))})
 
-              (when-let [unsatisfied-vars (not-empty (set/difference required-vars arg-vars))]
-                (throw (err/illegal-arg :unsatisfied-vars
-                                        {:vars unsatisfied-vars
-                                         :term (s/unform spec term-arg)})))
+    :triple {:provided-vars (into #{}
+                                  (comp (map term-arg)
+                                        (keep (fn [[val-type val-arg]]
+                                                (when (= :logic-var val-type)
+                                                  val-arg))))
+                                  [:e :v])}
 
-              ;; semi-joins do not provide vars
-              {:required-vars required-vars}))]
+    :union-join (let [{:keys [args branches]} term-arg
+                      arg-vars (set args)
+                      branches-vars (for [branch branches]
+                                      (into {:branch branch}
+                                            (combine-term-vars (map term-vars branch))))
+                      provided-vars (->> branches-vars
+                                         (map (comp set :provided-vars))
+                                         (apply set/intersection))
+                      required-vars (->> branches-vars
+                                         (map (comp set :required-vars))
+                                         (apply set/union))]
 
-    (case term-type
-      :call (let [{:keys [form return]} term-arg]
-              {:required-vars (form-vars form)
-               :provided-vars (when-let [[return-type return-arg] return]
-                                (case return-type
-                                  :scalar #{return-arg}))})
+                  (when-let [unsatisfied-vars (not-empty (set/difference required-vars arg-vars))]
+                    (throw (err/illegal-arg :unsatisfied-vars
+                                            {:vars unsatisfied-vars
+                                             :term (s/unform ::union-join term-arg)})))
 
-      :triple {:provided-vars (into #{}
-                                    (comp (map term-arg)
-                                          (keep (fn [[val-type val-arg]]
-                                                  (when (= :logic-var val-type)
-                                                    val-arg))))
-                                    [:e :v])}
+                  {:provided-vars (set/intersection arg-vars provided-vars)
+                   :required-vars (set/difference arg-vars provided-vars)})
 
-      :union-join (let [{:keys [args branches]} term-arg
-                        arg-vars (set args)
-                        branches-vars (for [branch branches]
-                                        (into {:branch branch}
-                                              (combine-term-vars (map term-vars branch))))
-                        provided-vars (->> branches-vars
-                                           (map (comp set :provided-vars))
-                                           (apply set/intersection))
-                        required-vars (->> branches-vars
-                                           (map (comp set :required-vars))
-                                           (apply set/union))]
-
-                    (when-let [unsatisfied-vars (not-empty (set/difference required-vars arg-vars))]
-                      (throw (err/illegal-arg :unsatisfied-vars
-                                              {:vars unsatisfied-vars
-                                               :term (s/unform ::union-join term-arg)})))
-
-                    {:provided-vars (set/intersection arg-vars provided-vars)
-                     :required-vars (set/difference arg-vars provided-vars)})
-
-      :semi-join (sj-term-vars ::semi-join)
-      :anti-join (sj-term-vars ::anti-join)
-
-      :sub-query (let [{:keys [query]} term-arg]
-                   {:provided-vars (set (or (:keys query)
-                                            (->> (:find query)
-                                                 (filter (comp #{:logic-var} first))
-                                                 (map form-vars)
-                                                 (apply set/union))))
-                    :required-vars (set (map second (:in query)))}))))
+    (:semi-join :anti-join :sub-query)
+    (let [{:keys [sub-query]} term-arg]
+      {:provided-vars (set (or (:keys sub-query)
+                               (->> (:find sub-query)
+                                    (filter (comp #{:logic-var} first))
+                                    (map form-vars)
+                                    (apply set/union))))
+       :required-vars (set (map second (:in sub-query)))})))
 
 (defn- ->param-sym [lv]
   (-> (symbol (str "?" (name lv)))
@@ -401,50 +380,26 @@
                                              (map (juxt identity ->param-sym)))
                                        in-bindings)}))))
 
-(defn- ->temporal-clauses [temporal-rules]
-  (letfn [(with-time-in-clause [clauses time-k {:keys [time-from time-to]}]
-            (-> clauses (assoc time-k (list 'in time-from time-to))))
-
-          (with-time-at-clause [clauses time-k {:keys [time-at]}]
-            (-> clauses (assoc time-k (list 'at time-at))))]
-
-    (->> temporal-rules
-         (reduce (fn [acc {:keys [e] :as rule}]
-                   (-> acc
-                       (update e
-                               (fn [e-preds {:keys [k] :as rule}]
-                                 (case k
-                                   for-all-app-time (-> e-preds (assoc :for-app-time :all-time))
-                                   for-app-time-in (-> e-preds (with-time-in-clause :for-app-time rule))
-                                   for-app-time-at (-> e-preds (with-time-at-clause :for-app-time rule))
-
-                                   for-all-sys-time (-> e-preds (assoc :for-sys-time :all-time))
-                                   for-sys-time-in (-> e-preds (with-time-in-clause :for-sys-time rule))
-                                   for-sys-time-at (-> e-preds (with-time-at-clause :for-sys-time rule))))
-                               rule)))
-                 {}))))
-
 (defn- wrap-scan-col-preds [scan-col col-preds]
   (case (count col-preds)
     0 scan-col
     1 {scan-col (first col-preds)}
     {scan-col (list* 'and col-preds)}))
 
-(defn- plan-scan [triples temporal-clauses]
-  (let [attrs (into #{} (map :a) triples)
+(defn- plan-scan [table match temporal-opts]
+  (let [attrs (set (keys match))
 
-        attr->lits (-> triples
-                       (->> (keep (fn [{:keys [a], [v-type v-arg] :v}]
+        attr->lits (-> match
+                       (->> (keep (fn [[a [v-type v-arg]]]
                                     (when (= :literal v-type)
                                       {:a a, :lit v-arg})))
                             (group-by :a))
                        (update-vals #(into #{} (map :lit) %)))]
 
-    (-> [:scan {:table (or (some-> (first (attr->lits '_table)) symbol)
-                           'xt_docs)
-                :for-app-time (:for-app-time temporal-clauses '(at :now))
+    (-> [:scan {:table table
+                :for-app-time (:for-app-time temporal-opts [:at :now])
                 ;; defaults handled by scan
-                :for-sys-time (:for-sys-time temporal-clauses)}
+                :for-sys-time (:for-sys-time temporal-opts)}
          (-> attrs
              (disj '_table)
              (->> (mapv (fn [attr]
@@ -459,7 +414,7 @@
 (defn- wrap-unwind [plan triples]
   (->> triples
        (transduce
-        (comp (keep (fn [{:keys [a], [v-type _v-arg] :v}]
+        (comp (keep (fn [[a [v-type _v-arg]]]
                       (when (= v-type :unwind)
                         a)))
               (distinct))
@@ -471,25 +426,28 @@
                             (vary-meta update ::vars conj uw-col)))))
         plan)))
 
-(defn- plan-triples [triples temporal-clauses]
-  (let [triples (group-by :e triples)]
+(defn- plan-from [from triples]
+  (let [tables (into from
+                     (map (fn [[e triples]]
+                            (let [{triples false, table true} (group-by #(= :_table (:a %)) triples)]
+                              {:table 'xt_docs
+                               :match (conj (for [{:keys [a v]} triples]
+                                              (MapEntry/create a v))
+                                            (MapEntry/create :id e))})))
+                     (group-by :e triples))]
     (vec
-     (for [e (set/union (set (keys triples))
-                        (set (keys temporal-clauses)))
-           :let [triples (->> (conj (get triples e) {:e e, :a :id, :v e})
-                              (map #(update % :a col-sym)))
-                 temporal-clauses (get temporal-clauses e)]]
-       (let [var->cols (-> triples
-                           (->> (keep (fn [{:keys [a], [v-type v-arg] :v}]
+     (for [{:keys [table match temporal-opts]} tables]
+       (let [match (->> match (mapv (fn [[a v]] (MapEntry/create (col-sym a) v))))
+             var->cols (-> match
+                           (->> (keep (fn [[a [v-type v-arg]]]
                                         (case v-type
                                           :logic-var {:lv v-arg, :col a}
                                           :unwind {:lv (first v-arg), :col (attr->unwind-col a)}
                                           nil)))
                                 (group-by :lv))
                            (update-vals #(into #{} (map :col) %)))]
-
-         (-> (plan-scan triples temporal-clauses)
-             (wrap-unwind triples)
+         (-> (plan-scan table match temporal-opts)
+             (wrap-unwind match)
              (wrap-unify var->cols)))))))
 
 (defn- plan-call [{:keys [form return]}]
@@ -543,18 +501,15 @@
              (MapEntry/create param param-symbol)))
          (into {}))))
 
-(defn- plan-semi-join [sj-type {:keys [args terms] :as sj}]
-  (let [{sj-required-vars :required-vars} (term-vars [sj-type sj])
-        required-vars (if (seq sj-required-vars) (set args) #{})
-        apply-mapping (->apply-mapping required-vars)]
+(defn- plan-semi-join [sj-type {:keys [sub-query] :as sj}]
+  (let [{:keys [required-vars provided-vars]} (term-vars [sj-type sj])
+        apply-mapping (when (seq required-vars)
+                        (->apply-mapping (set/union required-vars provided-vars)))]
 
-    (-> (plan-query
-         (cond-> {:find (vec (for [arg args]
-                               [:logic-var arg]))
-                  :where terms}
-           (seq required-vars) (assoc ::apply-mapping apply-mapping)))
-        (vary-meta into {::required-vars required-vars
-                         ::apply-mapping apply-mapping}))))
+    (-> (plan-query (-> sub-query
+                        (assoc ::apply-mapping apply-mapping)
+                        (dissoc :in)))
+        (vary-meta assoc ::apply-mapping apply-mapping))))
 
 (defn- wrap-semi-joins [plan sj-type semi-joins]
   (->> semi-joins
@@ -598,8 +553,8 @@
 
     (mega-join (into [plan] union-joins) param-vars)))
 
-(defn- plan-sub-query [{:keys [query]}]
-  (let [required-vars (->> (:in query)
+(defn- plan-sub-query [{:keys [sub-query]}]
+  (let [required-vars (->> (:in sub-query)
                            (into #{} (map
                                       (fn [[in-type in-arg :as in]]
                                         (when-not (= in-type :scalar)
@@ -607,7 +562,7 @@
                                                                   (s/unform ::in-binding in))))
                                         in-arg))))
         apply-mapping (->apply-mapping required-vars)]
-    (-> (plan-query (-> query
+    (-> (plan-query (-> sub-query
                         (dissoc :in)
                         (assoc ::apply-mapping apply-mapping)))
         (vary-meta into {::required-vars required-vars, ::apply-mapping apply-mapping}))))
@@ -684,24 +639,46 @@
     [(-> triple (update 1 assoc :e new-e) (update 1 assoc :v new-v))
      replace-ctx]))
 
-(defmethod replace-vars :semi-join [[_ {:keys [args terms]}] replace-ctx]
-  (let [[new-args replace-ctx] (replace-arg-list args replace-ctx)
-        new-ctx (new-replacement-ctx args replace-ctx)
-        [new-terms _] (replace-vars* terms new-ctx)]
+(defn- replace-sq-vars [{:keys [find in keys where order-by rules]} replace-ctx]
+  (if-not rules
+    (let [[new-find replace-ctx] (replace-vars* find replace-ctx)
+          [new-in replace-ctx] (replace-vars* in replace-ctx)
+          [new-keys replace-ctx] (reduce (fn [[res replace-ctx] key-symbol]
+                                           (let [[replacement new-replace-ctx] (get-replacement replace-ctx key-symbol)]
+                                             [(conj res replacement) new-replace-ctx]))
+                                         [[] replace-ctx]
+                                         keys)
+          [new-order-by replace-ctx] (let [[new-order-by-elements replace-ctx]
+                                           (-> (map :find-arg order-by)
+                                               (replace-vars* replace-ctx))]
+                                       [(map #(assoc %1 :find-arg %2) order-by new-order-by-elements) replace-ctx])
+          new-ctx (new-replacement-ctx (->> (concat (map form-vars find)
+                                                    (map binding-vars in))
+                                            (apply set/union))
+                                       replace-ctx)
+          [new-where _] (replace-vars* where new-ctx)]
+      [(cond-> {:find new-find
+                :in new-in
+                :where new-where}
+         keys (assoc :keys new-keys)
+         order-by (assoc :order-by new-order-by))
+       replace-ctx])
+
+    (throw (err/illegal-arg :rules-not-supported-in-subquery
+                            (s/unform ::rules rules)))))
+
+(defmethod replace-vars :semi-join [[_ {:keys [sub-query]}] replace-ctx]
+  (let [[new-sq replace-ctx] (replace-sq-vars sub-query replace-ctx)]
     [[:semi-join
       {:exists 'exists?
-       :args new-args
-       :terms new-terms}]
+       :sub-query new-sq}]
      replace-ctx]))
 
-(defmethod replace-vars :anti-join [[_ {:keys [args terms]}] replace-ctx]
-  (let [[new-args replace-ctx] (replace-arg-list args replace-ctx)
-        new-ctx (new-replacement-ctx args replace-ctx)
-        [new-terms _] (replace-vars* terms new-ctx)]
+(defmethod replace-vars :anti-join [[_ {:keys [sub-query]}] replace-ctx]
+  (let [[new-sq replace-ctx] (replace-sq-vars sub-query replace-ctx)]
     [[:anti-join
-      {:not-exists 'not-exists?
-       :args new-args
-       :terms new-terms}]
+      {:exists 'exists?
+       :sub-query new-sq}]
      replace-ctx]))
 
 (defmethod replace-vars :union-join [[_ {:keys [args branches]}] replace-ctx]
@@ -731,35 +708,12 @@
                 args)]
     [(update fn-call 1 assoc :args new-args) new-ctx]))
 
-(defmethod replace-vars :sub-query [[_ {:keys [query]} :as _sub-query] replace-ctx]
-  (let [{:keys [find in keys where order-by rules]} query]
-    (if-not rules
-      (let [[new-find replace-ctx] (replace-vars* find replace-ctx)
-            [new-in replace-ctx] (replace-vars* in replace-ctx)
-            [new-keys replace-ctx] (reduce (fn [[res replace-ctx] key-symbol]
-                                             (let [[replacement new-replace-ctx] (get-replacement replace-ctx key-symbol)]
-                                               [(conj res replacement) new-replace-ctx]))
-                                           [[] replace-ctx]
-                                           keys)
-            [new-order-by replace-ctx] (let [[new-order-by-elements replace-ctx]
-                                             (-> (map :find-arg order-by)
-                                                 (replace-vars* replace-ctx))]
-                                         [(map #(assoc %1 :find-arg %2) order-by new-order-by-elements) replace-ctx])
-            new-ctx (new-replacement-ctx (->> (concat (map form-vars find)
-                                                      (map binding-vars in))
-                                              (apply set/union))
-                                         replace-ctx)
-            [new-where _] (replace-vars* where new-ctx)]
-        [[:sub-query
-          {:q 'q
-           :query (cond-> {:find new-find
-                           :in new-in
-                           :where new-where}
-                    keys (assoc :keys new-keys)
-                    order-by (assoc :order-by new-order-by))}]
-         replace-ctx])
-      (throw (err/illegal-arg :rules-not-supported-in-subquery
-                              (s/unform ::rules rules))))))
+(defmethod replace-vars :sub-query [[_ {:keys [sub-query]}] replace-ctx]
+  (let [[new-sq replace-ctx] (replace-sq-vars sub-query replace-ctx)]
+    [[:sub-query
+      {:q 'q
+       :sub-query new-sq}]
+     replace-ctx]))
 
 (defmethod replace-vars :rule [rule replace-ctx]
   (let [[new-args new-replace-ctx]
@@ -824,20 +778,15 @@
           (case type
             (:triple :call) clause
 
-            (:semi-join :anti-join)
-            (->> clause second :terms
-                 (expand-rules rule-name->rules)
-                 (update clause 1 assoc :terms))
-
             :union-join
             (->> clause second :branches
                  (mapv (partial expand-rules rule-name->rules))
                  (update clause 1 assoc :branches))
 
-            :sub-query
-            (->> clause second :query :where
+            (:semi-join :anti-join :sub-query)
+            (->> clause second :sub-query :where
                  (expand-rules rule-name->rules)
-                 (update-in clause [1 :query] assoc :where))
+                 (update-in clause [1 :sub-query] assoc :where))
 
             :rule (rewrite-rule rule-name->rules arg)
 
@@ -852,7 +801,7 @@
                                       {:rule-name name})))))
         rule-name->rules))
 
-(defn- plan-body [{where-clauses :where, apply-mapping ::apply-mapping, rules :rules, :as query}]
+(defn- plan-body [{:keys [from], where-clauses :where, apply-mapping ::apply-mapping, rules :rules, :as query}]
   (let [in-rels (plan-in-tables query)
         {::keys [param-vars]} (meta in-rels)
 
@@ -863,17 +812,12 @@
         where-clauses (expand-rules rule-name->rules where-clauses)
 
         {triple-clauses :triple, call-clauses :call, sub-query-clauses :sub-query
-         semi-join-clauses :semi-join, anti-join-clauses :anti-join, union-join-clauses :union-join
-         :as grouped-clauses}
+         semi-join-clauses :semi-join, anti-join-clauses :anti-join, union-join-clauses :union-join}
         (-> where-clauses
             (->> (group-by first))
-            (update-vals #(mapv second %)))
+            (update-vals #(mapv second %)))]
 
-        temporal-rules (mapcat grouped-clauses [:for-all-app-time :for-app-time-at :for-app-time-in
-                                                :for-all-sys-time :for-sys-time-at :for-sys-time-in])
-        temporal-clauses (->temporal-clauses temporal-rules)]
-
-    (loop [plan (mega-join (vec (concat in-rels (plan-triples triple-clauses temporal-clauses)))
+    (loop [plan (mega-join (vec (concat in-rels (plan-from from triple-clauses)))
                            (concat param-vars apply-mapping))
 
            calls (some->> call-clauses (mapv plan-call))
